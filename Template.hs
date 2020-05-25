@@ -16,7 +16,7 @@ import           Language.Haskell.TH        (Body (..), Clause (..), Con (..),
                                              conE, conP, conT, funD, instanceD,
                                              mkName, newName, normalB, reify,
                                              varE, varP, varT)
-import           Language.Haskell.TH.Syntax (StrictType, getQ, putQ)
+import           Language.Haskell.TH.Syntax (BangType, getQ, putQ)
 
 -- | We want a function which can curry n-tuples on demand
 curryN :: Int -> Q Exp
@@ -77,10 +77,6 @@ mkCurryDec ith = do
 
 data Result e a = Err e
     | Ok a
-data List a = Nil
-    | Cons a (List a)
-data Tree a = Leaf a
-    | Node (Tree a) a (Tree a)
 
 data Deriving = Deriving
     { tyCon' :: Name
@@ -136,34 +132,85 @@ deriveFunctor ty = do
 -- | t (a :: k)
                   apply t (KindedTV name _) = appT t (varT name)
 
--- | TODO
+-- | Replacing the state in the Q Monad
+-- Stores type constructor name
+-- Stores last the type variable
+-- These will be used later in the `newField` function
     putQ $ Deriving tyConName tyVar
-    sequence [instanceD (return []) instanceType [genFmap cs]]
 
+
+-- | Sequence is used to ensure it type checks to Q [Dec]
+-- sequence :: [Q Dec] -> Q [Dec]
+    sequence [
+
+-- | instance (Functor <typeVar>) where
+--       fmap = ...
+        instanceD        -- ^ Generates an instance declaration
+          (return [])    -- ^ No Context (For example (Show w) => ...)
+          instanceType   -- ^ Functor <typeVar>
+          [genFmap cs]]  -- ^ fmap = ...
+                         -- Note that cs refers to the data constructors of the type
+
+-- | Generates an fMap function declaration after some data constructors are supplied
 genFmap :: [Con] -> Q Dec
-genFmap cs = funD 'fmap (map genFmapClause cs)
+genFmap cs =
 
+-- | <name> = <body>
+    funD 'fmap                  -- ^ name = fmap
+         (map genFmapClause cs) -- ^ body = ...
+                                -- maps over each data constructor.
+                                -- In a sum type, e.g. data A = B | C
+                                -- we would be mapping over cs = [B, C]
+
+-- | Takes in a data constructor, returns a clause
 genFmapClause :: Con -> Q Clause
 genFmapClause (NormalC name fieldTypes)
+
+-- | Generate a new scoped name f, we fmap this f over the type
   = do f          <- newName "f"
+
+-- | Generate scoped name x for all the fields of a data constructor
        fieldNames <- replicateM (length fieldTypes) (newName "x")
 
-       let pats = varP f:[conP name (map varP fieldNames)]
-           body = normalB $ appsE $
-             conE name : zipWith (curry (newField f)) fieldNames fieldTypes
+-- | Generate patterns
+
+-- | f <data constructor name> <field1> <field2> ...
+       let pats =
+                   varP f                           -- ^ f
+                : [conP name (map varP fieldNames)] -- ^ <data constructor name> <field1> <field2> ...
+
+-- | = <data constructor name>
+           body =
+               normalB $ appsE     -- ^ [ExpQ] -> ExpQ
+
+                       $ conE name -- ^ <data constructor name>
+
+                       -- | []
+                       : zipWith (newField f) fieldNames fieldTypes
 
        clause pats body []
+
 genFmapClause _ = fail "genFmapClause: not NormalC"
 
-newField :: Name -> (Name, StrictType) -> Q Exp
-newField f (x, (_, fieldType))
+-- |
+newField :: Name -> Name -> BangType -> Q Exp
+
+-- | since strictness doesn't affect our deriving of functor instance, we use "_" to ignore the strictness
+newField f x (_, fieldType)
+
+-- | Earlier we stored this
   = do Just (Deriving typeCon typeVar) <- getQ
+
        case fieldType of
+-- a; matches the typeVar we want, apply the function
          VarT typeVar' | typeVar' == typeVar ->
            [| $(varE f) $(varE x) |]
+-- T a b; matches the typeVar we want
          ty `AppT` VarT typeVar' |
            leftmost ty == ConT typeCon && typeVar' == typeVar ->
              [| fmap $(varE f) $(varE x) |]
+
+-- Doesn't change the other fields
          _ -> [| $(varE x) |]
 
 leftmost :: Type -> Type
