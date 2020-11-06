@@ -204,11 +204,11 @@ newField f x (_, fieldType)
        case fieldType of
 -- a; matches the typeVar we want, apply the function
          VarT typeVar' | typeVar' == typeVar ->
-           [| $(varE f) $(varE x) |]
+           [| $(varE f) $(varE x) |] -- ^ { f x }
 -- T a b; matches the typeVar we want
          ty `AppT` VarT typeVar' |
            leftmost ty == ConT typeCon && typeVar' == typeVar ->
-             [| fmap $(varE f) $(varE x) |]
+             [| fmap $(varE f) $(varE x) |] -- ^ { fmap f x }
 
 -- Doesn't change the other fields
          _ -> [| $(varE x) |]
